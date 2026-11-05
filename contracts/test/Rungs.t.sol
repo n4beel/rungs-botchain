@@ -474,10 +474,50 @@ contract RungsTest is Test {
     assertEq(rungs.ACCEPT_WINDOW(), 3 days);
     assertEq(rungs.REPORT_WINDOW(), 7 days);
 
-    // latest() pagination
-    uint256 lid1 = _createLadder();
-    (uint256[] memory ids, Rungs.Ladder[] memory list) = rungs.latest(0, 10);
+    // 1. Min / Max stake boundary
+    vm.prank(creator);
+    rungs.create("Min Stake Ladder", 0.01 ether);
+    vm.prank(creator);
+    rungs.create("Max Stake Ladder", 1000 ether);
+    vm.expectRevert(Rungs.BadParams.selector);
+    vm.prank(creator);
+    rungs.create("Above Max Stake Ladder", 1000 ether + 1);
+
+    // 2. Exact acceptBy timestamp check (block.timestamp <= acceptBy should revert on walkover)
+    uint256 lid = _createLadder();
+    vm.prank(playerA);
+    rungs.join(lid);
+    vm.prank(playerB);
+    rungs.join(lid);
+    vm.prank(playerB);
+    uint256 cid = rungs.challenge{value: STAKE}(lid, 1);
+    Rungs.Challenge memory c = rungs.challengeOf(cid);
+    vm.warp(c.acceptBy);
+    vm.prank(playerB);
+    vm.expectRevert(abi.encodeWithSelector(Rungs.NotYet.selector, c.acceptBy));
+    rungs.walkover(cid);
+
+    // 3. Exact reportBy boundary for reporting (block.timestamp == reportBy must succeed)
+    vm.warp(c.acceptBy - 1 hours);
+    vm.prank(playerA);
+    rungs.accept{value: STAKE}(cid);
+    c = rungs.challengeOf(cid);
+    vm.warp(c.reportBy);
+    vm.prank(playerB);
+    rungs.report(cid, true); // at exact reportBy, reporting is still allowed
+
+    // 4. Settled event swapped flag check when challenger wins
+    vm.expectEmit(true, true, true, true);
+    emit Rungs.Settled(cid, playerB, true);
+    vm.prank(playerA);
+    rungs.report(cid, true);
+
+    // 5. Standings & latest pagination bounds
+    address[] memory st = rungs.standings(lid, 1, 10);
+    assertEq(st.length, 1);
+    (uint256[] memory ids, Rungs.Ladder[] memory list) = rungs.latest(1, 10);
     assertGt(ids.length, 0);
     assertEq(list.length, ids.length);
+    assertEq(ids[0], 2); // order check
   }
 }
